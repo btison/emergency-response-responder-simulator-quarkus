@@ -80,7 +80,7 @@ public class MissionEventSourceTest {
             return null;
         }).when(simulator).processMissionCreated(any());
 
-        MessageWithAck<String> message = MessageWithAck.of(payload);
+        MessageWithAck<String, String> message = MessageWithAck.of("key", payload);
         missionEventSource.process(message).await().indefinitely();
         verify(simulator).processMissionCreated(messageCaptor.capture());
         Message<JsonObject> captured = messageCaptor.getValue();
@@ -129,7 +129,7 @@ public class MissionEventSourceTest {
                 "    }" +
                 "}";
 
-        MessageWithAck<String> message = MessageWithAck.of(payload);
+        MessageWithAck<String, String> message = MessageWithAck.of("key", payload);
         missionEventSource.process(message).await().indefinitely();
         verify(simulator, never()).processMissionCreated(any(io.vertx.mutiny.core.eventbus.Message.class));
         assertThat(message.acked(), is(true));
@@ -139,7 +139,7 @@ public class MissionEventSourceTest {
     void testProcessMessageWhenUnexpectedMessage() {
         String payload = "test";
 
-        MessageWithAck<String> message = MessageWithAck.of(payload);
+        MessageWithAck<String, String> message = MessageWithAck.of("key", payload);
         missionEventSource.process(message).await().indefinitely();
         verify(simulator, never()).processMissionCreated(any(io.vertx.mutiny.core.eventbus.Message.class));
         assertThat(message.acked(), is(true));

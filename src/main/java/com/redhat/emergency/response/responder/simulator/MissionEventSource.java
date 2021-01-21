@@ -4,7 +4,13 @@ import java.util.Arrays;
 import java.util.concurrent.CompletionStage;
 import javax.inject.Inject;
 
+import com.redhat.emergency.response.responder.simulator.tracing.TracingKafkaUtils;
+import com.redhat.emergency.response.responder.simulator.tracing.TracingUtils;
+import io.opentracing.Span;
+import io.opentracing.Tracer;
 import io.smallrye.mutiny.Uni;
+import io.smallrye.reactive.messaging.kafka.IncomingKafkaRecord;
+import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.json.JsonObject;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import org.eclipse.microprofile.reactive.messaging.Acknowledgment;
@@ -23,17 +29,28 @@ public class MissionEventSource {
     @Inject
     EventBus eventBus;
 
+    @Inject
+    Tracer tracer;
+
     @Incoming("mission-event")
     @Acknowledgment(Acknowledgment.Strategy.MANUAL)
     public Uni<CompletionStage<Void>> process(Message<String> missionCommandMessage) {
+
+        Span span = TracingKafkaUtils.buildChildSpan("createMissionCommand", (IncomingKafkaRecord<String, String>)missionCommandMessage, tracer);
+
         return Uni.createFrom().item(missionCommandMessage)
                 .onItem().transform(m -> accept(m.getPayload()))
                 .onItem().ifNotNull().transformToUni(this::toSimulator)
-                .onItem().transform(v -> missionCommandMessage.ack());
+                .onItem().transform(v -> {
+                    span.finish();
+                    return missionCommandMessage.ack();
+                });
     }
 
     private Uni<Void> toSimulator(JsonObject payload) {
-        return eventBus.request("simulator-mission-created", payload.getJsonObject("body")).map(m -> null);
+        DeliveryOptions options = new DeliveryOptions();
+        TracingUtils.inject(options, tracer);
+        return eventBus.request("simulator-mission-created", payload.getJsonObject("body"), options).map(m -> null);
     }
 
     private JsonObject accept(String messageAsJson) {

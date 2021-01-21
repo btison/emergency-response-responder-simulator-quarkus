@@ -1,8 +1,10 @@
 package com.redhat.emergency.response.responder.simulator.model;
 
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.redhat.emergency.response.responder.simulator.DistanceHelper;
@@ -35,6 +37,8 @@ public class ResponderLocation {
     public enum Status {CREATED, MOVING, WAITING, PICKEDUP, DROPPED};
 
     private Status status;
+
+    private Map<String, String> spanContextMap = new HashMap<>();
 
     private ResponderLocation() {
     }
@@ -77,6 +81,10 @@ public class ResponderLocation {
 
     public String key() {
         return missionId;
+    }
+
+    public Map<String, String> getSpanContextMap() {
+        return spanContextMap;
     }
 
     public void calculateNextLocation() {

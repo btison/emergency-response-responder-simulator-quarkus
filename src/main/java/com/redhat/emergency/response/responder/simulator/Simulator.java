@@ -12,6 +12,10 @@ import com.redhat.emergency.response.responder.simulator.model.Coordinates;
 import com.redhat.emergency.response.responder.simulator.model.MissionStep;
 import com.redhat.emergency.response.responder.simulator.model.ResponderLocation;
 import com.redhat.emergency.response.responder.simulator.repository.ResponderLocationRepository;
+import com.redhat.emergency.response.responder.simulator.tracing.TracingKafkaUtils;
+import com.redhat.emergency.response.responder.simulator.tracing.TracingUtils;
+import io.opentracing.Span;
+import io.opentracing.Tracer;
 import io.quarkus.vertx.ConsumeEvent;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
@@ -37,6 +41,9 @@ public class Simulator {
     @Inject
     ResponderLocationRepository repository;
 
+    @Inject
+    Tracer tracer;
+
     @ConfigProperty(name = "simulator.delay")
     long delay;
 
@@ -46,13 +53,21 @@ public class Simulator {
     @ConfigProperty(name = "simulator.distance.variation")
     double distanceVariation;
 
+    @ConfigProperty(name = "mp.messaging.outgoing.responder-location-update.topic")
+    String responderLocationUpdateTopic;
+
     private final UnicastProcessor<Pair<String, ResponderLocation>> processor = UnicastProcessor.create();
 
     @ConsumeEvent("simulator-mission-created")
     public void processMissionCreated(Message<JsonObject> message) {
+        Span span = TracingUtils.activateSpan("missionCreated", message, tracer);
         toResponderLocation(message.body()).onItem().transform(r -> repository.put(r))
                 .invoke(this::waitForLocationUpdate)
-                .subscribe().with(key -> message.replyAndForget(new JsonObject()), throwable -> {
+                .subscribe().with(key -> {
+                        span.finish();
+                        message.replyAndForget(new JsonObject());
+                    }, throwable -> {
+                    span.finish();
                     log.error("Error while processing message with missionId " + message.body().getString("id"), throwable);
                     message.replyAndForget(new JsonObject());
                 });
@@ -91,18 +106,25 @@ public class Simulator {
 
         return processor.onItem().transform(p -> {
             ResponderLocation rl = p.getRight();
-            String json = new JsonObject().put("responderId", rl.getResponderId())
-                    .put("missionId", rl.getMissionId())
-                    .put("incidentId", rl.getIncidentId())
-                    .put("status", rl.getStatus().name())
-                    .put("lat", rl.getCurrentPosition().getLatD())
-                    .put("lon", rl.getCurrentPosition().getLonD())
-                    .put("human", rl.isPerson())
-                    .put("continue", rl.getStatus().equals(ResponderLocation.Status.MOVING)
-                            || rl.getStatus().equals(ResponderLocation.Status.PICKEDUP))
-                    .encode();
-            log.debug("Sending message to responder-location-update channel. Key: " + p.getLeft() + " - Message: " + json);
-            return KafkaRecord.of(p.getLeft(), json);
+            Span span = TracingUtils.activateSpanFromResponderLocation("responderLocationUpdate", rl, tracer);
+            try {
+                String json = new JsonObject().put("responderId", rl.getResponderId())
+                        .put("missionId", rl.getMissionId())
+                        .put("incidentId", rl.getIncidentId())
+                        .put("status", rl.getStatus().name())
+                        .put("lat", rl.getCurrentPosition().getLatD())
+                        .put("lon", rl.getCurrentPosition().getLonD())
+                        .put("human", rl.isPerson())
+                        .put("continue", rl.getStatus().equals(ResponderLocation.Status.MOVING)
+                                || rl.getStatus().equals(ResponderLocation.Status.PICKEDUP))
+                        .encode();
+                log.debug("Sending message to responder-location-update channel. Key: " + p.getLeft() + " - Message: " + json);
+                KafkaRecord<String, String> record = KafkaRecord.of(responderLocationUpdateTopic, p.getLeft(), json);
+                TracingKafkaUtils.buildAndInjectSpan(record, tracer);
+                return record;
+            } finally {
+                span.finish();
+            }
         });
 
     }
@@ -142,7 +164,10 @@ public class Simulator {
                                     j.getBoolean("wayPoint"), j.getBoolean("destination"))).collect(Collectors.toList());
                     Coordinates currentPosition = new Coordinates(BigDecimal.valueOf(json.getDouble("responderStartLat")),
                             BigDecimal.valueOf((json.getDouble("responderStartLong"))));
-                    return new ResponderLocation(json.getString("id"), json.getString("responderId"), json.getString("incidentId"), steps, currentPosition, person, distanceUnit());
+
+                    ResponderLocation responderLocation =  new ResponderLocation(json.getString("id"), json.getString("responderId"), json.getString("incidentId"), steps, currentPosition, person, distanceUnit());
+                    TracingUtils.injectInResponderLocation(responderLocation, tracer);
+                    return responderLocation;
                 });
     }
 
